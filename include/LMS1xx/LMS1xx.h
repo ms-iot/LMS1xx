@@ -23,6 +23,11 @@
 
 #ifndef LMS1XX_H_
 #define LMS1XX_H_
+#include <boost/thread.hpp>
+#include <boost/asio.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/ip/tcp.hpp>
+
 
 #include <LMS1xx/lms_buffer.h>
 #include <LMS1xx/lms_structs.h>
@@ -105,7 +110,7 @@ public:
   * - stop angle.
   * @returns scanCfg structure.
   */
-  scanCfg getScanCfg() const;
+  scanCfg getScanCfg();
 
   /*!
   * @brief Set scan configuration.
@@ -133,7 +138,7 @@ public:
   * - stop angle.
   * @returns scanOutputRange structure.
   */
-  scanOutputRange getScanOutputRange() const;
+  scanOutputRange getScanOutputRange();
 
   /*!
   * @brief Start or stop continuous data acquisition.
@@ -169,9 +174,9 @@ protected:
   */
   static void parseScanData(char* buf, scanData* data);
 
-  bool connected_;
   LMSBuffer buffer_;
-  int socket_fd_;
+  boost::asio::io_service io_service_;
+  boost::asio::ip::tcp::socket socket_;
 };
 
 #endif /* LMS1XX_H_ */

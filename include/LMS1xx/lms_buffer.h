@@ -26,7 +26,6 @@
 #include "console_bridge/console.h"
 #include <stdint.h>
 #include <string.h>
-#include <unistd.h>
 
 #define LMS_BUFFER_SIZE 50000
 #define LMS_STX 0x02
@@ -44,19 +43,23 @@ public:
   {
   }
 
-  void readFrom(int fd)
+  bool readFrom(boost::asio::ip::tcp::socket& socket)
   {
-    int ret = read(fd, buffer_ + total_length_, sizeof(buffer_) - total_length_);
+    size_t len = boost::asio::read(socket, boost::asio::buffer(buffer_ + total_length_, sizeof(buffer_) - total_length_));
 
-    if (ret > 0)
+    if (len > 0)
     {
-      total_length_ += ret;
-      logDebug("Read %d bytes from fd, total length is %d.", ret, total_length_);
+      total_length_ += len;
+      logDebug("Read %d bytes from fd, total length is %d.", len, total_length_);
+
+      return true;
     }
     else
     {
 
       logWarn("Buffer read() returned error.");
+
+      return false;
     }
   }
 

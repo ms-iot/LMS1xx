@@ -21,22 +21,14 @@
  *                                                                         *
  ***************************************************************************/
 
-#include <sys/time.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-
 #include "LMS1xx/LMS1xx.h"
 #include "console_bridge/console.h"
 
-LMS1xx::LMS1xx() : connected_(false)
+LMS1xx::LMS1xx() 
+: socket_(io_service_)
 {
 }
 
@@ -46,41 +38,31 @@ LMS1xx::~LMS1xx()
 
 void LMS1xx::connect(std::string host, int port)
 {
-  if (!connected_)
-  {
-    logDebug("Creating non-blocking socket.");
-    socket_fd_ = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (socket_fd_)
-    {
-      struct sockaddr_in stSockAddr;
-      stSockAddr.sin_family = PF_INET;
-      stSockAddr.sin_port = htons(port);
-      inet_pton(AF_INET, host.c_str(), &stSockAddr.sin_addr);
+  socket_.close();
 
-      logDebug("Connecting socket to laser.");
-      int ret = ::connect(socket_fd_, (struct sockaddr *) &stSockAddr, sizeof(stSockAddr));
+  logDebug("Creating non-blocking socket.");
 
-      if (ret == 0)
-      {
-        connected_ = true;
-        logDebug("Connected succeeded.");
-      }
-    }
-  }
+  char portString[100];
+  sprintf(portString, "%i", port);
+
+  boost::asio::ip::tcp::resolver resolver(io_service_);
+  boost::asio::ip::tcp::resolver::query query(host, portString);
+
+  boost::asio::ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
+
+  boost::asio::connect(socket_, endpoint_iterator);
+
+  socket_.is_open();
 }
 
 void LMS1xx::disconnect()
 {
-  if (connected_)
-  {
-    close(socket_fd_);
-    connected_ = false;
-  }
+  socket_.close();
 }
 
 bool LMS1xx::isConnected()
 {
-  return connected_;
+  return socket_.is_open();
 }
 
 void LMS1xx::startMeas()
@@ -88,9 +70,9 @@ void LMS1xx::startMeas()
   char buf[100];
   sprintf(buf, "%c%s%c", 0x02, "sMN LMCstartmeas", 0x03);
 
-  write(socket_fd_, buf, strlen(buf));
+  boost::asio::write(socket_, boost::asio::buffer(buf, std::strlen(buf)));
 
-  int len = read(socket_fd_, buf, 100);
+  size_t len  = boost::asio::read(socket_, boost::asio::buffer(buf, 100));
   if (buf[0] != 0x02)
     logWarn("invalid packet recieved");
   buf[len] = 0;
@@ -101,10 +83,8 @@ void LMS1xx::stopMeas()
 {
   char buf[100];
   sprintf(buf, "%c%s%c", 0x02, "sMN LMCstopmeas", 0x03);
-
-  write(socket_fd_, buf, strlen(buf));
-
-  int len = read(socket_fd_, buf, 100);
+  boost::asio::write(socket_, boost::asio::buffer(buf, std::strlen(buf)));
+  size_t len  = boost::asio::read(socket_, boost::asio::buffer(buf, 100));
   if (buf[0] != 0x02)
     logWarn("invalid packet recieved");
   buf[len] = 0;
@@ -116,9 +96,9 @@ status_t LMS1xx::queryStatus()
   char buf[100];
   sprintf(buf, "%c%s%c", 0x02, "sRN STlms", 0x03);
 
-  write(socket_fd_, buf, strlen(buf));
+  boost::asio::write(socket_, boost::asio::buffer(buf, std::strlen(buf)));
+  size_t len  = boost::asio::read(socket_, boost::asio::buffer(buf, 100));
 
-  int len = read(socket_fd_, buf, 100);
   if (buf[0] != 0x02)
     logWarn("invalid packet recieved");
   buf[len] = 0;
@@ -133,43 +113,27 @@ status_t LMS1xx::queryStatus()
 void LMS1xx::login()
 {
   char buf[100];
-  int result;
   sprintf(buf, "%c%s%c", 0x02, "sMN SetAccessMode 03 F4724744", 0x03);
 
-  fd_set readset;
-  struct timeval timeout;
+  socket_.send(boost::asio::buffer(buf, std::strlen(buf)));
 
-
-  do   //loop until data is available to read
-  {
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
-
-    write(socket_fd_, buf, strlen(buf));
-
-    FD_ZERO(&readset);
-    FD_SET(socket_fd_, &readset);
-    result = select(socket_fd_ + 1, &readset, NULL, NULL, &timeout);
-
-  }
-  while (result <= 0);
-
-  int len = read(socket_fd_, buf, 100);
+  size_t len  = socket_.receive(boost::asio::buffer(buf, 100));
   if (buf[0] != 0x02)
     logWarn("invalid packet recieved");
   buf[len] = 0;
   logDebug("RX: %s", buf);
 }
 
-scanCfg LMS1xx::getScanCfg() const
+scanCfg LMS1xx::getScanCfg()
 {
   scanCfg cfg;
   char buf[100];
   sprintf(buf, "%c%s%c", 0x02, "sRN LMPscancfg", 0x03);
 
-  write(socket_fd_, buf, strlen(buf));
+  socket_.send(boost::asio::buffer(buf, std::strlen(buf)));
 
-  int len = read(socket_fd_, buf, 100);
+  size_t len  = socket_.receive(boost::asio::buffer(buf, 100));
+
   if (buf[0] != 0x02)
     logWarn("invalid packet recieved");
   buf[len] = 0;
@@ -187,10 +151,9 @@ void LMS1xx::setScanCfg(const scanCfg &cfg)
           cfg.scaningFrequency, cfg.angleResolution, cfg.startAngle,
           cfg.stopAngle, 0x03);
 
-  write(socket_fd_, buf, strlen(buf));
+  socket_.send(boost::asio::buffer(buf, std::strlen(buf)));
 
-  int len = read(socket_fd_, buf, 100);
-
+  size_t len  = socket_.receive(boost::asio::buffer(buf, 100));
   buf[len - 1] = 0;
 }
 
@@ -202,21 +165,21 @@ void LMS1xx::setScanDataCfg(const scanDataCfg &cfg)
           cfg.resolution, cfg.encoder, cfg.position ? 1 : 0,
           cfg.deviceName ? 1 : 0, cfg.timestamp ? 1 : 0, cfg.outputInterval, 0x03);
   logDebug("TX: %s", buf);
-  write(socket_fd_, buf, strlen(buf));
+  socket_.send(boost::asio::buffer(buf, std::strlen(buf)));
 
-  int len = read(socket_fd_, buf, 100);
+  size_t len  = socket_.receive(boost::asio::buffer(buf, 100));
   buf[len - 1] = 0;
 }
 
-scanOutputRange LMS1xx::getScanOutputRange() const
+scanOutputRange LMS1xx::getScanOutputRange()
 {
   scanOutputRange outputRange;
   char buf[100];
   sprintf(buf, "%c%s%c", 0x02, "sRN LMPoutputRange", 0x03);
 
-  write(socket_fd_, buf, strlen(buf));
+  socket_.send(boost::asio::buffer(buf, std::strlen(buf)));
 
-  int len = read(socket_fd_, buf, 100);
+  size_t len  = socket_.receive(boost::asio::buffer(buf, 100));
 
   sscanf(buf + 1, "%*s %*s %*d %X %X %X", &outputRange.angleResolution,
          &outputRange.startAngle, &outputRange.stopAngle);
@@ -228,9 +191,9 @@ void LMS1xx::scanContinous(int start)
   char buf[100];
   sprintf(buf, "%c%s %d%c", 0x02, "sEN LMDscandata", start, 0x03);
 
-  write(socket_fd_, buf, strlen(buf));
+  socket_.send(boost::asio::buffer(buf, std::strlen(buf)));
 
-  int len = read(socket_fd_, buf, 100);
+  size_t len  = socket_.receive(boost::asio::buffer(buf, 100));
 
   if (buf[0] != 0x02)
     logError("invalid packet recieved");
@@ -241,26 +204,8 @@ void LMS1xx::scanContinous(int start)
 
 bool LMS1xx::getScanData(scanData* scan_data)
 {
-  fd_set rfds;
-  FD_ZERO(&rfds);
-  FD_SET(socket_fd_, &rfds);
-
-  // Block a total of up to 100ms waiting for more data from the laser.
-  while (1)
-  {
-    // Would be great to depend on linux's behaviour of updating the timeval, but unfortunately
-    // that's non-POSIX (doesn't work on OS X, for example).
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 100000;
-
-    logDebug("entering select()", tv.tv_usec);
-    int retval = select(socket_fd_ + 1, &rfds, NULL, NULL, &tv);
-    logDebug("returned %d from select()", retval);
-    if (retval)
+    if (buffer_.readFrom(socket_))
     {
-      buffer_.readFrom(socket_fd_);
-
       // Will return pointer if a complete message exists in the buffer,
       // otherwise will return null.
       char* buffer_data = buffer_.getNextBuffer();
@@ -272,14 +217,9 @@ bool LMS1xx::getScanData(scanData* scan_data)
         return true;
       }
     }
-    else
-    {
-      // Select timed out or there was an fd error.
-      return false;
-    }
-  }
-}
 
+    return false;
+}
 
 void LMS1xx::parseScanData(char* buffer, scanData* data)
 {
@@ -472,9 +412,9 @@ void LMS1xx::saveConfig()
   char buf[100];
   sprintf(buf, "%c%s%c", 0x02, "sMN mEEwriteall", 0x03);
 
-  write(socket_fd_, buf, strlen(buf));
+  socket_.send(boost::asio::buffer(buf, std::strlen(buf)));
 
-  int len = read(socket_fd_, buf, 100);
+  size_t len  = socket_.receive(boost::asio::buffer(buf, 100));
 
   if (buf[0] != 0x02)
     logWarn("invalid packet recieved");
@@ -487,9 +427,9 @@ void LMS1xx::startDevice()
   char buf[100];
   sprintf(buf, "%c%s%c", 0x02, "sMN Run", 0x03);
 
-  write(socket_fd_, buf, strlen(buf));
+  socket_.send(boost::asio::buffer(buf, std::strlen(buf)));
 
-  int len = read(socket_fd_, buf, 100);
+  size_t len  = socket_.receive(boost::asio::buffer(buf, 100));
 
   if (buf[0] != 0x02)
     logWarn("invalid packet recieved");
